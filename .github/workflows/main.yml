@@ -5,6 +5,7 @@ on:
     branches:
       - master
       - staging
+      - servo-csp
       - trying
   pull_request:
   merge_group:
