@@ -1546,39 +1546,50 @@ fn does_url_match_expression_in_origin_with_redirect_count(
 }
 
 /// https://www.w3.org/TR/CSP/#match-hosts
-fn host_part_match(a: &str, b: &str) -> MatchResult {
-    debug_assert!(!a.is_empty());
-    if a.is_empty() {
+fn host_part_match(expression_host: &str, url_host: &str) -> MatchResult {
+    debug_assert!(!expression_host.is_empty());
+    // Step 1: If host is not a domain, return "Does Not Match".
+    if url_host.is_empty() {
         return DoesNotMatch;
     }
-    if a.as_bytes()[0] == b'*' {
-        let remaining = &a[1..];
+    // Step 2: If pattern is "*", return "Matches".
+    if expression_host == "*" {
+        return Matches;
+    }
+    // Step 3: If pattern starts with "*.":
+    if expression_host.starts_with("*.") {
+        // Step 3.1: Let remaining be pattern with the leading U+002A (*) removed and ASCII lowercased.
+        let remaining = &expression_host[1..];
         debug_assert_eq!(&remaining[..1], ".");
-        if remaining.len() > b.len() {
+        if remaining.len() > url_host.len() {
             return DoesNotMatch;
         }
-        let remaining_b = &b[(b.len()-remaining.len())..];
-        debug_assert_eq!(remaining_b.len(), remaining.len());
-        if ascii_case_insensitive_match(remaining, remaining_b) {
+        let remaining_url_host = &url_host[(url_host.len()-remaining.len())..];
+        debug_assert_eq!(remaining_url_host.len(), remaining.len());
+        // Step 3.2: If host to ASCII lowercase ends with remaining, then return "Matches".
+        if ascii_case_insensitive_match(remaining, remaining_url_host) {
             return Matches;
         } else {
+            // Step 3.3: Return "Does Not Match".
             return DoesNotMatch;
         }
     }
-    if !ascii_case_insensitive_match(a, b) {
+    // Step 4: If pattern is not an ASCII case-insensitive match for host, return "Does Not Match".
+    if !ascii_case_insensitive_match(expression_host, url_host) {
         return DoesNotMatch;
     }
     static IPV4_ADDRESS_RULE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r#"([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])\.([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])\.([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])\.([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])"#).unwrap());
-    if IPV4_ADDRESS_RULE.is_match(a) && a != "127.0.0.1" {
+    if IPV4_ADDRESS_RULE.is_match(url_host) && url_host != "127.0.0.1" {
         return DoesNotMatch;
     }
     // The spec uses the phrase "if A is an IPv6 address", without giving specific instructions on
     // how to tell if this is the case. In URLs, IPv6 addresses start with `[`, so let's go with that.
     // See https://url.spec.whatwg.org/#host-parsing
-    if a.as_bytes()[0] == b'[' {
+    if expression_host.as_bytes()[0] == b'[' {
         return DoesNotMatch;
     }
+    // Step 5: Return "Matches".
     Matches
 }
 
