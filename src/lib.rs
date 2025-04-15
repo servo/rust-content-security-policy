@@ -219,7 +219,14 @@ impl CspList {
             let violates = policy.does_request_violate_policy(request);
             if let Violates::Directive(directive) = violates {
                 let resource = ViolationResource::Url(request.url.clone());
-                violations.push(Violation { resource, directive });
+                violations.push(Violation {
+                    resource,
+                    directive: Directive {
+                        name: get_the_effective_directive_for_request(request).to_owned(),
+                        value: directive.value.clone(),
+                    },
+                    policy: policy.clone(),
+                });
             }
         }
         violations
@@ -239,7 +246,14 @@ impl CspList {
             if let Violates::Directive(directive) = violates {
                 result = CheckResult::Blocked;
                 let resource = ViolationResource::Url(request.url.clone());
-                violations.push(Violation { resource, directive });
+                violations.push(Violation {
+                    resource,
+                    directive: Directive {
+                        name: get_the_effective_directive_for_request(request).to_owned(),
+                        value: directive.value.clone(),
+                    },
+                    policy: policy.clone(),
+                });
             }
         }
         (result, violations)
@@ -259,7 +273,11 @@ impl CspList {
                 if directive.post_request_check(request, response, policy) == CheckResult::Blocked {
                     violations.push(Violation {
                         resource: ViolationResource::Url(request.url.clone()),
-                        directive: directive.clone(),
+                        directive: Directive {
+                            name: get_the_effective_directive_for_request(request).to_owned(),
+                            value: directive.value.clone(),
+                        },
+                        policy: policy.clone(),
                     });
                     if policy.disposition == PolicyDisposition::Enforce {
                         result = CheckResult::Blocked;
@@ -272,7 +290,11 @@ impl CspList {
                 if directive.response_check(request, response, policy) == CheckResult::Blocked {
                     violations.push(Violation {
                         resource: ViolationResource::Url(request.url.clone()),
-                        directive: directive.clone(),
+                        directive: Directive {
+                            name: get_the_effective_directive_for_request(request).to_owned(),
+                            value: directive.value.clone(),
+                        },
+                        policy: policy.clone(),
                     });
                     if policy.disposition == PolicyDisposition::Enforce {
                         result = CheckResult::Blocked;
@@ -299,6 +321,7 @@ impl CspList {
                         name: get_the_effective_directive_for_inline_checks(type_).to_owned(),
                         value: directive.value.clone(),
                     },
+                    policy: policy.clone(),
                 };
                 violations.push(violation);
                 if policy.disposition == PolicyDisposition::Enforce {
@@ -325,6 +348,7 @@ impl CspList {
                     let violation = Violation {
                         directive: directive.clone(),
                         resource: ViolationResource::Inline { report_sample },
+                        policy: policy.clone(),
                     };
                     violations.push(violation);
                     if policy.disposition == PolicyDisposition::Enforce {
@@ -383,7 +407,8 @@ impl CspList {
                     resource: ViolationResource::TrustedTypePolicy {
                         // Step 2.10: Set violation’s sample to the substring of policyName, containing its first 40 characters.
                         sample,
-                    }
+                    },
+                    policy: policy.clone(),
                 };
                 // Step 2.11: Execute Report a violation on violation.
                 violations.push(violation);
@@ -394,6 +419,93 @@ impl CspList {
             }
         }
         return (result, violations);
+    }
+    /**
+    https://w3c.github.io/trusted-types/dist/spec/#abstract-opdef-does-sink-type-require-trusted-types
+
+    Note that, while this algoritm is defined as operating on a global object, the only property it
+    actually uses is the global's CSP List. So this function operates on that.
+    */
+    pub fn does_sink_type_require_trusted_types(&self, sink_group: &str, include_report_only_policies: bool) -> bool {
+        let sink_group = &sink_group.to_owned();
+        // Step 1: For each policy in global’s CSP list:
+        for policy in &self.0 {
+            // Step 1.1: If policy’s directive set does not contain a directive whose name is "require-trusted-types-for", skip to the next policy.
+            let directive = policy.directive_set.iter().find(|directive| directive.name == "require-trusted-types-for");
+            // Step 1.2: Let directive be the policy’s directive set’s directive whose name is "require-trusted-types-for"
+            if let Some(directive) = directive {
+                // Step 1.3: If directive’s value does not contain a trusted-types-sink-group which is a match for sinkGroup, skip to the next policy.
+                if !directive.value.contains(sink_group) {
+                    continue;
+                }
+                // Step 1.4: Let enforced be true if policy’s disposition is "enforce", and false otherwise.
+                let enforced = policy.disposition == PolicyDisposition::Enforce;
+                // Step 1.5: If enforced is true, return true.
+                if enforced {
+                    return true;
+                }
+                // Step 1.6: If includeReportOnlyPolicies is true, return true.
+                if include_report_only_policies {
+                    return true;
+                }
+            }
+        }
+        // Step 2: Return false.
+        false
+    }
+    /**
+    https://w3c.github.io/trusted-types/dist/spec/#should-block-sink-type-mismatch
+
+    Note that, while this algoritm is defined as operating on a global object, the only property it
+    actually uses is the global's CSP List. So this function operates on that.
+    */
+    pub fn should_sink_type_mismatch_violation_be_blocked_by_csp(&self, sink: &str, sink_group: &str, source: &str) -> (CheckResult, Vec<Violation>) {
+        use CheckResult::*;
+        let sink_group = &sink_group.to_owned();
+        // Step 1: Let result be "Allowed".
+        let mut result = Allowed;
+        let mut violations = Vec::new();
+        // Step 2: Let sample be source.
+        let sample = source;
+        // Step 3: If sink is "Function", then:
+        if sink == "Function" {
+            // There currently is no sink of function, so skipping these for now
+            // Step 3.1: If sample starts with "function anonymous", strip that from sample.
+            // Step 3.2: Otherwise if sample starts with "async function anonymous", strip that from sample.
+            // Step 3.3: Otherwise if sample starts with "function* anonymous", strip that from sample.
+            // Step 3.4: Otherwise if sample starts with "async function* anonymous", strip that from sample.
+        }
+        // Step 4: For each policy in global’s CSP list:
+        for policy in &self.0 {
+            // Step 4.1: If policy’s directive set does not contain a directive whose name is "require-trusted-types-for", skip to the next policy.
+            let directive = policy.directive_set.iter().find(|directive| directive.name == "require-trusted-types-for");
+            // Step 4.2: Let directive be the policy’s directive set’s directive whose name is "require-trusted-types-for"
+            let Some(directive) = directive else { continue };
+            // Step 4.3: If directive’s value does not contain a trusted-types-sink-group which is a match for sinkGroup, skip to the next policy.
+            if !directive.value.contains(sink_group) {
+                continue;
+            }
+            // Step 4.6: Let trimmedSample be the substring of sample, containing its first 40 characters.
+            let mut trimmed_sample: String = sample.into();
+            trimmed_sample.truncate(40);
+            // Step 4.4: Let violation be the result of executing Create a violation object for global, policy,
+            // and directive on global, policy and "require-trusted-types-for"
+            violations.push(Violation {
+                // Step 4.5: Set violation’s resource to "trusted-types-sink".
+                resource: ViolationResource::TrustedTypeSink {
+                    // Step 4.7: Set violation’s sample to be the result of concatenating the list « sink, trimmedSample « using "|" as a separator.
+                    sample: sink.to_owned() + "|" + &trimmed_sample,
+                },
+                directive: directive.clone(),
+                policy: policy.clone(),
+            });
+            // Step 4.9: If policy’s disposition is "enforce", then set result to "Blocked".
+            if policy.disposition == PolicyDisposition::Enforce {
+                result = Blocked
+            }
+        }
+        // Step 2: Return false.
+        (result, violations)
     }
     pub fn get_sandboxing_flag_set_for_document(&self) -> Option<SandboxingFlagSet> {
         self.0
@@ -627,6 +739,7 @@ https://www.w3.org/TR/CSP/#violation
 pub struct Violation {
     pub resource: ViolationResource,
     pub directive: Directive,
+    pub policy: Policy,
 }
 
 /**
@@ -643,7 +756,10 @@ pub enum ViolationResource {
     },
     TrustedTypePolicy {
         sample: String,
-    }
+    },
+    TrustedTypeSink {
+        sample: String,
+    },
 }
 
 /**
